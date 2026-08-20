@@ -315,19 +315,89 @@
   }
 }
 
+/* Screen: hide print-only blocks */
+.print-only {
+  display: none;
+}
+
 @media print {
   html,
   body {
     background: white !important;
     color: #1a1816 !important;
+    font-size: 11pt;
   }
   .no-print {
     display: none !important;
+  }
+  .print-only {
+    display: block !important;
   }
   .shop-canvas,
   .shop-shell {
     background: white !important;
     box-shadow: none !important;
     border: none !important;
+    border-radius: 0 !important;
+  }
+  .shop-panel {
+    background: white !important;
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+  }
+  .shop-panel::before,
+  .shop-panel::after {
+    display: none !important;
+  }
+  .bid-print-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #1a1816;
+    padding-bottom: 12pt;
+    margin-bottom: 16pt;
+  }
+  .bid-print-header h1 {
+    font-size: 18pt;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    color: #1a1816 !important;
+  }
+  .bid-print-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12pt 0;
+  }
+  .bid-print-table th,
+  .bid-print-table td {
+    border-bottom: 1px solid #ccc;
+    padding: 4pt 6pt;
+    text-align: left;
+    font-size: 9pt;
+  }
+  .bid-print-table th {
+    font-family: var(--font-mono);
+    font-size: 8pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #555;
+  }
+  .bid-print-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono);
+  }
+  .bid-print-totals {
+    margin-top: 16pt;
+    width: 40%;
+    margin-left: auto;
+  }
+  .bid-print-totals tr td {
+    padding: 3pt 6pt;
+  }
+  .bid-print-totals .grand td {
+    border-top: 2px solid #1a1816;
+    font-weight: 600;
+    font-size: 12pt;
   }
 }

@@ -10,9 +10,55 @@ import {
   type Customer,
   type ShopSettings,
 } from "@/lib/types";
+import { defaultWasteForUnit } from "@/lib/units";
 import { mapCatalog, mapCustomer, mapSettings } from "./map";
 import { SEED_CATALOG, SEED_CUSTOMERS } from "./seed-data";
 import { seedSampleJobs } from "./seed-jobs";
+
+/**
+ * Invite-only gate. If `shop_members` has any rows, the caller must match by
+ * user_id or email. Empty table keeps preview / first-deploy bootstrap open.
+ */
+export async function assertShopMember(
+  userId: string,
+  email?: string | null,
+): Promise<void> {
+  const sql = await getSql();
+  let countRows: { n: number }[];
+  try {
+    countRows = await sql<{ n: number }>`
+      select count(*)::int as n from shop_members
+    `;
+  } catch {
+    // Table not migrated yet (older preview) — allow through.
+    return;
+  }
+  if (toNum(countRows[0]?.n) === 0) return;
+
+  const byUser = await sql<{ id: number }>`
+    select id from shop_members where user_id = ${userId} limit 1
+  `;
+  if (byUser[0]) return;
+
+  if (email) {
+    const byEmail = await sql<{ id: number }>`
+      select id from shop_members
+      where lower(email) = ${email.trim().toLowerCase()}
+      limit 1
+    `;
+    if (byEmail[0]) {
+      await sql`
+        update shop_members set user_id = ${userId}
+        where lower(email) = ${email.trim().toLowerCase()} and user_id is null
+      `;
+      return;
+    }
+  }
+
+  throw new Error(
+    "This shop is invite-only. Ask a Skyline admin to add your email to shop members.",
+  );
+}
 
 export async function ensureShopReady(userId: string): Promise<ShopSettings> {
   const sql = await getSql();
@@ -207,16 +253,20 @@ export const upsertCatalogItem = createServerFn({ method: "POST" })
     const category = String(input.category ?? "other");
     const material = String(input.material ?? "galvalume");
     const unit = String(input.unit ?? "lf");
+    const resolvedUnit = isUnit(unit) ? unit : "lf";
     return {
       id: input.id ? toNum(input.id) : null,
       name,
       category: isCategory(category) ? category : "other",
       material: isMaterial(material) ? material : "galvalume",
       gauge: String(input.gauge ?? "").trim(),
-      unit: isUnit(unit) ? unit : "lf",
+      unit: resolvedUnit,
       materialUnitCost: toNum(input.materialUnitCost),
       laborHoursPerUnit: toNum(input.laborHoursPerUnit),
-      wastePct: toNum(input.wastePct, 10),
+      wastePct:
+        input.wastePct != null
+          ? toNum(input.wastePct, 10)
+          : defaultWasteForUnit(resolvedUnit),
       notes: String(input.notes ?? "").trim(),
     };
   })
@@ -264,4 +314,53 @@ export const archiveCatalogItem = createServerFn({ method: "POST" })
       where id = ${id} and user_id = ${context.userId}
     `;
     return { ok: true as const };
+  });
+
+/** List invitees. Empty list means the shop is open (no gate). */
+export const listShopMembers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await ensureShopReady(context.userId);
+    const sql = await getSql();
+    try {
+      return await sql<
+        { id: number; email: string; user_id: string | null; role: string }
+      >`
+        select id, email, user_id, role from shop_members
+        order by lower(email)
+      `;
+    } catch {
+      return [];
+    }
+  });
+
+export const inviteShopMember = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { email: string; role?: string }) => {
+    const email = String(input.email ?? "").trim().toLowerCase();
+    if (!email || !email.includes("@")) throw new Error("Valid email required");
+    return {
+      email,
+      role: String(input.role ?? "estimator").trim() || "estimator",
+    };
+  })
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    await ensureShopReady(context.userId);
+    await sql`
+      insert into shop_members (email, role, invited_by)
+      values (${data.email}, ${data.role}, ${context.userId})
+      on conflict do nothing
+    `;
+    // unique index is on lower(email) — use upsert via select+insert if conflict no-op
+    const existing = await sql<{ id: number }>`
+      select id from shop_members where lower(email) = ${data.email} limit 1
+    `;
+    if (!existing[0]) {
+      await sql`
+        insert into shop_members (email, role, invited_by)
+        values (${data.email}, ${data.role}, ${context.userId})
+      `;
+    }
+    return { ok: true as const, email: data.email };
   });
