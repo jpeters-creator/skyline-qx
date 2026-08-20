@@ -1,0 +1,16 @@
+node_modules
+.vercel
+.tanstack
+dist
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+screenshots
+artifacts
+attachments
+.grok
+.node_modules.lock
+*.pglite
+.pglite
