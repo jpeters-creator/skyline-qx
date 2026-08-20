@@ -17,11 +17,41 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { deleteJob, duplicateJob, listJobs } from "@/lib/server/jobs";
-import { JOB_STATUSES, STATUS_LABEL, type JobStatus } from "@/lib/types";
+import {
+  JOB_STATUSES,
+  STATUS_LABEL,
+  type JobStatus,
+} from "@/lib/types";
 import { money } from "@/lib/utils";
 import { format, parseISO } from "date-fns";
 
 export const Route = createFileRoute("/jobs/")({ component: JobsPage });
+
+/** Estimating workflow buckets — matches how the shop talks about the board. */
+const PIPELINE_BUCKETS = [
+  {
+    id: "all",
+    label: "All",
+    statuses: null as JobStatus[] | null,
+  },
+  {
+    id: "open",
+    label: "Open",
+    statuses: ["lead", "estimating", "bid_sent"] as JobStatus[],
+  },
+  {
+    id: "awarded",
+    label: "Awarded",
+    statuses: ["won", "in_progress"] as JobStatus[],
+  },
+  {
+    id: "closed",
+    label: "Closed",
+    statuses: ["complete", "lost"] as JobStatus[],
+  },
+] as const;
+
+type PipelineId = (typeof PIPELINE_BUCKETS)[number]["id"];
 
 function formatDate(s: string | null) {
   if (!s) return "—";
@@ -41,17 +71,36 @@ function JobsPage() {
 }
 
 function JobsList() {
+  const [pipeline, setPipeline] = useState<PipelineId>("open");
   const [status, setStatus] = useState<JobStatus | "all">("all");
   const queryClient = useQueryClient();
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => listJobs() });
 
+  const counts = useMemo(() => {
+    const list = jobs.data ?? [];
+    const map: Record<string, number> = { all: list.length };
+    for (const bucket of PIPELINE_BUCKETS) {
+      if (!bucket.statuses) continue;
+      map[bucket.id] = list.filter((j) =>
+        bucket.statuses!.includes(j.status),
+      ).length;
+    }
+    return map;
+  }, [jobs.data]);
+
   const filtered = useMemo(() => {
     const list = jobs.data ?? [];
+    const bucket = PIPELINE_BUCKETS.find((b) => b.id === pipeline);
     return list.filter((j) => {
+      if (bucket?.statuses && !bucket.statuses.includes(j.status)) return false;
       if (status !== "all" && j.status !== status) return false;
       return true;
     });
-  }, [jobs.data, status]);
+  }, [jobs.data, pipeline, status]);
+
+  const pipelineValue = useMemo(() => {
+    return filtered.reduce((sum, j) => sum + j.bid.total, 0);
+  }, [filtered]);
 
   const dup = useMutation({
     mutationFn: (id: number) => duplicateJob({ data: id }),
@@ -80,12 +129,12 @@ function JobsList() {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost">
                   <ListFilter className="size-4" />
-                  Filter
+                  Status
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <DropdownMenuItem onClick={() => setStatus("all")}>
-                  All{status === "all" ? " ·" : ""}
+                  All statuses{status === "all" ? " ·" : ""}
                 </DropdownMenuItem>
                 {JOB_STATUSES.map((s) => (
                   <DropdownMenuItem key={s} onClick={() => setStatus(s)}>
@@ -100,16 +149,42 @@ function JobsList() {
         }
       />
 
-      {status !== "all" ? (
-        <p className="mb-4 text-sm text-muted-foreground">
-          Showing {STATUS_LABEL[status]}.{" "}
+      <div className="mb-4 flex max-w-full gap-1 overflow-x-auto">
+        {PIPELINE_BUCKETS.map((b) => (
           <button
+            key={b.id}
             type="button"
-            className="underline-offset-2 hover:underline"
-            onClick={() => setStatus("all")}
+            onClick={() => {
+              setPipeline(b.id);
+              setStatus("all");
+            }}
+            className={pipeline === b.id ? "nav-tab nav-tab-active" : "nav-tab"}
           >
-            Clear
+            {b.label}
+            <span className="ml-1.5 font-mono text-[10px] opacity-70">
+              {counts[b.id] ?? 0}
+            </span>
           </button>
+        ))}
+      </div>
+
+      {filtered.length > 0 ? (
+        <p className="mb-4 text-sm text-muted-foreground">
+          {filtered.length} job{filtered.length === 1 ? "" : "s"} ·{" "}
+          <span className="tabular-nums text-ink">{money(pipelineValue)}</span>
+          {status !== "all" ? (
+            <>
+              {" · "}
+              {STATUS_LABEL[status]}{" "}
+              <button
+                type="button"
+                className="underline-offset-2 hover:underline"
+                onClick={() => setStatus("all")}
+              >
+                Clear
+              </button>
+            </>
+          ) : null}
         </p>
       ) : null}
 
@@ -121,9 +196,11 @@ function JobsList() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="shop-panel p-10 text-center">
-          <p className="font-display text-2xl font-medium tracking-[0.04em]">No matching jobs</p>
+          <p className="font-display text-2xl font-medium tracking-[0.04em]">
+            No matching jobs
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Open a new estimate or clear the filter.
+            Open a new estimate or switch the pipeline filter.
           </p>
         </div>
       ) : (
@@ -149,7 +226,8 @@ function JobsList() {
                   {job.siteAddress ? ` · ${job.siteAddress}` : ""}
                 </p>
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Customer: {job.customerName ?? "None"} · Due: {formatDate(job.bidDate)} · {job.itemCount} lines
+                  Customer: {job.customerName ?? "None"} · Due:{" "}
+                  {formatDate(job.bidDate)} · {job.itemCount} lines
                 </p>
                 <div className="mt-2">
                   <StatusBadge status={job.status} />
@@ -157,13 +235,20 @@ function JobsList() {
               </Link>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label="Job actions">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Job actions"
+                  >
                     <MoreHorizontal className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem asChild>
-                    <Link to="/jobs/$jobId" params={{ jobId: String(job.id) }}>
+                    <Link
+                      to="/jobs/$jobId"
+                      params={{ jobId: String(job.id) }}
+                    >
                       Open
                     </Link>
                   </DropdownMenuItem>
@@ -174,7 +259,8 @@ function JobsList() {
                   <DropdownMenuItem
                     className="text-danger"
                     onClick={() => {
-                      if (confirm(`Delete ${job.jobNumber}?`)) del.mutate(job.id);
+                      if (confirm(`Delete ${job.jobNumber}?`))
+                        del.mutate(job.id);
                     }}
                   >
                     Delete
